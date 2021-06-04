@@ -9,4 +9,4 @@ serial_server: serial_server.o
 serial_server.o: serial_server.c
 	$(CC) $(CFLAGS_THREAD) -c serial_server.c
 clean:
-	rm -f serial_server.o
+	rm -f serial_server serial_server.o

@@ -108,7 +108,7 @@ int main(int argc, char **argv)
     int is_connected, fdmax, recv_bytes, client_info_len;
     struct sockaddr_in client_info;
     fd_set read_fds_master, read_fds;
-    char buf[MAX_BUF_SIZE];
+    char buf_to_tcp[MAX_BUF_SIZE], buf_to_serial[MAX_BUF_SIZE];
     int window_size = MAX_BUF_SIZE;
     
     if((sock_fd = set_socket()) == ERROR_RETURN)
@@ -129,6 +129,8 @@ int main(int argc, char **argv)
     /* Initial select() numfds */
     fdmax = serial_fd; 
 
+    memset(buf_to_tcp, 0, MAX_BUF_SIZE);
+    memset(buf_to_serial, 0, MAX_BUF_SIZE);
     conn_fd = -1;
     while(1){
         /* Select active fds into read_fds */
@@ -159,8 +161,8 @@ int main(int argc, char **argv)
         }
         if (FD_ISSET(serial_fd, &read_fds))
         {
-            memset(buf, 0, MAX_BUF_SIZE);
-            if ((recv_bytes = read(serial_fd, buf, MAX_BUF_SIZE)) <= 0) 
+            
+            if ((recv_bytes = read(serial_fd, buf_to_tcp, MAX_BUF_SIZE)) <= 0) 
             {
                 if (recv_bytes == 0) /* Connection closed */
                 {
@@ -176,7 +178,7 @@ int main(int argc, char **argv)
             }
             else
             {   
-                if (write(conn_fd, buf, recv_bytes) == -1)
+                if (write(conn_fd, buf_to_tcp, recv_bytes) == -1)
                 {
                     perror("Socket write()");
                     goto fd_close;
@@ -184,13 +186,13 @@ int main(int argc, char **argv)
                 else
                 {   
                     window_size += recv_bytes;
+                    memset(buf_to_tcp, 0, recv_bytes);
                 }
             }
         }
         if (FD_ISSET(conn_fd, &read_fds) && (window_size > 0))
         {   
-            memset(buf, 0, MAX_BUF_SIZE);
-            if ((recv_bytes = read(conn_fd, buf, window_size)) <= 0)
+            if ((recv_bytes = read(conn_fd, buf_to_serial, window_size)) <= 0)
             {
                 if (recv_bytes == 0) /* Connection closed */
                 {
@@ -207,7 +209,7 @@ int main(int argc, char **argv)
             }
             else
             {
-                if (write(serial_fd, buf, recv_bytes) < 0)
+                if (write(serial_fd, buf_to_serial, recv_bytes) < 0)
                 {
                     perror("Serial write()");
                     goto fd_close;
@@ -215,6 +217,7 @@ int main(int argc, char **argv)
                 else
                 {
                     window_size -= recv_bytes;
+                    memset(buf_to_serial, 0, recv_bytes);
                     if(window_size < 0)
                     {
                         fprintf(stderr, "window size error\n");
