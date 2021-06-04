@@ -12,6 +12,8 @@
 #include <sys/ioctl.h> 
 #include <linux/serial.h>
 
+#define IS_CONNECTION(x) if ((x) != -1) continue;
+
 #define ERROR_RETURN -1
 #define PORT 8080
 #define MAX_BUF_SIZE 5000
@@ -102,7 +104,8 @@ static int set_serial(){
 }
 int main(int argc, char **argv)
 {
-    int i, sock_fd, serial_fd, conn_fd, fdmax, recv_bytes, client_info_len;
+    int sock_fd, serial_fd, conn_fd;
+    int is_connected, fdmax, recv_bytes, client_info_len;
     struct sockaddr_in client_info;
     fd_set read_fds_master, read_fds;
     char buf[MAX_BUF_SIZE];
@@ -126,6 +129,7 @@ int main(int argc, char **argv)
     /* Initial select() numfds */
     fdmax = serial_fd; 
 
+    conn_fd = -1;
     while(1){
         /* Select active fds into read_fds */
         read_fds = read_fds_master;
@@ -133,92 +137,88 @@ int main(int argc, char **argv)
             perror("select()");
             goto fd_close;
         }
-        for(i = 0; i <= fdmax; i++) {
-            if (FD_ISSET(i, &read_fds)) 
+        if (FD_ISSET(sock_fd, &read_fds)) 
+        {
+            IS_CONNECTION(conn_fd);
+            client_info_len = sizeof(client_info);
+            if ((conn_fd = accept(sock_fd, (struct sockaddr *)&client_info, &client_info_len)) < 0)
             {
-                if (i == sock_fd) /* Handle new connections */
+                perror("accept()");
+            }
+            else 
+            {   
+                printf("Connection accpet(%d)\n", conn_fd);
+                /* Add new "conn_fd" into read_fds */
+                FD_SET(conn_fd, &read_fds_master); 
+                if (conn_fd > fdmax) 
                 {
-                    client_info_len = sizeof(client_info);
-                    if ((conn_fd = accept(sock_fd, (struct sockaddr *)&client_info, &client_info_len)) < 0)
-                    {
-                        perror("accept()");
-                    }
-                    else 
-                    {   
-                        printf("Connection accpet(%d)\n", conn_fd);
-                        /* Add new "conn_fd" into read_fds */
-                        FD_SET(conn_fd, &read_fds_master); 
-                        if (conn_fd > fdmax) 
-                        {
-                            /* Update select() numfds */
-                            fdmax = conn_fd;
-                        }
-                    }
-
+                    /* Update select() numfds */
+                    fdmax = conn_fd;
                 }
-                if (i == serial_fd)
+            }
+        }
+        if (FD_ISSET(serial_fd, &read_fds))
+        {
+            memset(buf, 0, MAX_BUF_SIZE);
+            if ((recv_bytes = read(serial_fd, buf, MAX_BUF_SIZE)) <= 0) 
+            {
+                if (recv_bytes == 0) /* Connection closed */
                 {
-                    memset(buf, 0, MAX_BUF_SIZE);
-                    if ((recv_bytes = read(serial_fd, buf, MAX_BUF_SIZE)) <= 0) 
-                    {
-                        if (recv_bytes == 0) /* Connection closed */
-                        {
-                            printf("Serial closed\n");
-                            FD_CLR(serial_fd, &read_fds_master); 
-                            close(serial_fd);
-                        } 
-                        else 
-                        {
-                            perror("Serial read()");
-                            goto fd_close;
-                        }
-                    }
-                    else
-                    {   
-                        if (write(conn_fd, buf, recv_bytes) == -1)
-                        {
-                            perror("Socket write()");
-                            goto fd_close;
-                        }
-                        else
-                        {   
-                            window_size += recv_bytes;
-                        }
-                    }
+                    printf("Serial closed\n");
+                    FD_CLR(serial_fd, &read_fds_master); 
+                    close(serial_fd);
+                } 
+                else 
+                {
+                    perror("Serial read()");
+                    goto fd_close;
                 }
-                if ((i == conn_fd) && (window_size > 0))
+            }
+            else
+            {   
+                if (write(conn_fd, buf, recv_bytes) == -1)
+                {
+                    perror("Socket write()");
+                    goto fd_close;
+                }
+                else
                 {   
-                    memset(buf, 0, MAX_BUF_SIZE);
-                    if ((recv_bytes = read(i, buf, window_size)) <= 0)
+                    window_size += recv_bytes;
+                }
+            }
+        }
+        if (FD_ISSET(conn_fd, &read_fds) && (window_size > 0))
+        {   
+            memset(buf, 0, MAX_BUF_SIZE);
+            if ((recv_bytes = read(conn_fd, buf, window_size)) <= 0)
+            {
+                if (recv_bytes == 0) /* Connection closed */
+                {
+                    printf("<Socket %d Closed>\n", conn_fd);
+                    FD_CLR(conn_fd, &read_fds_master); 
+                    close(conn_fd);
+                    conn_fd = -1;
+                } 
+                else 
+                {
+                    perror("Socket read()");
+                    goto fd_close;
+                }
+            }
+            else
+            {
+                if (write(serial_fd, buf, recv_bytes) < 0)
+                {
+                    perror("Serial write()");
+                    goto fd_close;
+                }
+                else
+                {
+                    window_size -= recv_bytes;
+                    if(window_size < 0)
                     {
-                        if (recv_bytes == 0) /* Connection closed */
-                        {
-                            printf("<Socket %d Closed>\n", i);
-                            FD_CLR(conn_fd, &read_fds_master); 
-                            close(conn_fd);
-                        } 
-                        else 
-                        {
-                            perror("Socket read()");
-                            goto fd_close;
-                        }
-                    }
-                    else
-                    {
-                        if (write(serial_fd, buf, recv_bytes) < 0)
-                        {
-                            perror("Serial write()");
-                            goto fd_close;
-                        }
-                        else
-                        {
-                            window_size -= recv_bytes;
-                            if(window_size < 0)
-                            {
-                                fprintf(stderr, "window size error\n");
-                                goto fd_close;
-                            }
-                        }
+                        fprintf(stderr, "window size error\n");
+                        goto fd_close;
                     }
                 }
             }
