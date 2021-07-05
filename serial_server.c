@@ -17,6 +17,7 @@
 #define ERROR_RETURN -1
 #define PORT 8080
 #define MAX_BUF_SIZE 5000
+#define ACCUMULATE_BUF_LIMIT 2500
 
 static int set_socket(){
 
@@ -64,35 +65,27 @@ static int set_serial(){
         fcntl(serial_fd, F_SETFL, 0);
     }
 
-    struct serial_struct serial;
-    ioctl(serial_fd, TIOCGSERIAL, &serial); 
-    serial.flags |= ASYNC_LOW_LATENCY; // (0x2000)
-    ioctl(serial_fd, TIOCSSERIAL, &serial);
-
     /* Setting I/O Baud Rate */
     cfsetispeed(&options, B921600);
     cfsetospeed(&options, B921600);
-    /* Setting control fleid */
+    /* Setting control option */
     options.c_cflag |= CREAD; /* Open receive */
     options.c_cflag |= CLOCAL; /* Ignore control line(Avoid occupy port) */
     options.c_cflag &= ~PARENB; /* Disable parity */
-    options.c_cflag &= ~CSTOPB; /* Disable two stop bits(only one)*/
+    options.c_cflag &= ~CSTOPB; /* Disable two stop bits(Only one)*/
     options.c_cflag &= ~CSIZE; /* Clear bit size*/
     options.c_cflag |= CS8; /* Set  8 bits per byte */
     options.c_cflag |= CRTSCTS; /* Hardware flow control */
-    /* Setting local field */
-    options.c_lflag &= ~ICANON; /* Disable canonical mode*/
+    /* Setting local option */
+    options.c_lflag &= ~ICANON; /* Disable canonical mode(Using Raw input) */
     options.c_lflag &= ~ECHO; /* Disable echo */
     options.c_lflag &= ~ECHOE; /* Disable erase */
-    options.c_lflag &= ~ECHONL; /* Disable new line echo */
     options.c_lflag &= ~ISIG; /* Disable interpretation of INTR, QUIT, SUSP and DSUSP */
-
-    // options.c_iflag |= (IXON | IXOFF | IXANY);
-    options.c_oflag &= ~OPOST;
-    options.c_oflag &= ~ONLCR;
-
-    options.c_cc[VMIN] = 0;
-    options.c_cc[VTIME] = 10;
+    /* Setting output option */
+    options.c_oflag &= ~OPOST; /* Raw output */
+    /* Setting control character */
+    options.c_cc[VMIN] = 0; /* Min waiting bytes to response() */
+    options.c_cc[VTIME] = 10; /* Timeout to response read() */
 
     if (tcsetattr(serial_fd, TCSANOW, &options) < 0)
     {
@@ -106,6 +99,7 @@ int main(int argc, char **argv)
 {
     int sock_fd, serial_fd, conn_fd;
     int is_connected, fdmax, recv_bytes, client_info_len;
+    int accumulate_buf_tcp;
     struct sockaddr_in client_info;
     fd_set read_fds_master, read_fds;
     char buf_to_tcp[MAX_BUF_SIZE], buf_to_serial[MAX_BUF_SIZE];
@@ -161,10 +155,10 @@ int main(int argc, char **argv)
         }
         if (FD_ISSET(serial_fd, &read_fds))
         {
-            
-            if ((recv_bytes = read(serial_fd, buf_to_tcp, MAX_BUF_SIZE)) <= 0) 
+            /* Read continuously from serial */
+            if ((recv_bytes = read(serial_fd, (buf_to_tcp + accumulate_buf_tcp), MAX_BUF_SIZE)) <= 0) 
             {
-                if (recv_bytes == 0) /* Connection closed */
+                if (recv_bytes == 0) /* Serial connection closed */
                 {
                     printf("Serial closed\n");
                     FD_CLR(serial_fd, &read_fds_master); 
@@ -178,19 +172,27 @@ int main(int argc, char **argv)
             }
             else
             {   
-                if (write(conn_fd, buf_to_tcp, recv_bytes) == -1)
+                /* Accumulate receive buffer */
+                accumulate_buf_tcp += recv_bytes;
+                /* Open tcp to serial window size */
+                window_size += recv_bytes;
+                /* Write back to Burnin when buffer level beyond limit */
+                if (accumulate_buf_tcp >= ACCUMULATE_BUF_LIMIT)
                 {
-                    perror("Socket write()");
-                    goto fd_close;
-                }
-                else
-                {   
-                    window_size += recv_bytes;
-                    memset(buf_to_tcp, 0, recv_bytes);
+                    if (write(conn_fd, buf_to_tcp, accumulate_buf_tcp) == -1)
+                    {
+                        perror("Socket write()");
+                        goto fd_close;
+                    }
+                    else
+                    {   
+                        accumulate_buf_tcp = 0;
+                        memset(buf_to_tcp, 0, accumulate_buf_tcp);
+                    }
                 }
             }
         }
-        if (FD_ISSET(conn_fd, &read_fds) && (window_size > 0))
+        if (FD_ISSET(conn_fd, &read_fds) && (window_size > ACCUMULATE_BUF_LIMIT))
         {   
             if ((recv_bytes = read(conn_fd, buf_to_serial, window_size)) <= 0)
             {
